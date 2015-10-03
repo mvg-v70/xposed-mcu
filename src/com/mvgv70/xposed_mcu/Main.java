@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.media.AudioManager;
 import android.util.Log;
 
@@ -30,7 +31,7 @@ public class Main implements IXposedHookLoadPackage {
   private static volatile boolean didShutdown = false;
   // запущено ли радио
   private static boolean isRadioRunning;
-  private static Thread do_shutdown;
+  private static boolean isRadioNeedRun;
 	
   @Override
   public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
@@ -47,6 +48,15 @@ public class Main implements IXposedHookLoadPackage {
         IntentFilter ai = new IntentFilter();
         ai.addAction("com.microntek.canbusdisplay");
         microntekServer.registerReceiver(appsReceiver, ai);
+        // показать версию модуля
+        try 
+        {
+     	  Context context = microntekServer.createPackageContext(getClass().getPackage().getName(), Context.CONTEXT_IGNORE_SECURITY);
+     	  String version = context.getString(R.string.app_version_name);
+          Log.d(TAG,"version="+version);
+        } catch (NameNotFoundException e) {}
+        // показать версию mcu
+        Log.d(TAG,am.getParameters("sta_mcu_version="));
       }
     };
     
@@ -99,6 +109,36 @@ public class Main implements IXposedHookLoadPackage {
     Log.d(TAG,"android.microntek.service hook OK");
   }
   
+  private static Thread do_shutdown = new Thread("delay_shutdown")
+  {
+    public void run()
+    {
+      Log.d(TAG,"shutdown thread running, sleep "+shutdownDelay);
+      try 
+      {
+        sleep(shutdownDelay*1000);
+      } 
+      catch (InterruptedException e) 
+      { 
+        Log.d(TAG,"thread interrupted"); 
+      }
+      Log.d(TAG,"shutdown thread ending");
+      // если thread не был прерван в PowerOn()
+      if (isShutdown)
+      {
+        // вызываем оригинальный метод powerOff()
+        didShutdown = true;
+        Log.d(TAG,"do shutdown: call powerOff");
+        XposedHelpers.callMethod(microntekServer, "powerOff", new Object[] {});
+        Log.d(TAG,"powerOff called");
+      }
+      else
+      {
+        Log.d(TAG,"shutdown process interrupted");
+      }
+    }
+  };
+  
   private void PowerOff()
   {
     if (isShutdown)
@@ -109,44 +149,17 @@ public class Main implements IXposedHookLoadPackage {
     }
     isShutdown = true;
     didShutdown = false;
-    //
-    do_shutdown = new Thread("delay_shutdown")
+    
+    // сохраним флаг запущенного радио
+    isRadioNeedRun = isRadioRunning;
+    Log.d(TAG,"isRadioNeedRun="+isRadioNeedRun);
+    if (isRadioNeedRun)
     {
-      public void run()
-      {
-        Log.d(TAG,"shutdown thread running, sleep "+shutdownDelay);
-        try 
-        {
-          sleep(shutdownDelay*1000);
-        } 
-        catch (InterruptedException e) 
-        { 
-          Log.d(TAG,"thread interrupted"); 
-        }
-        Log.d(TAG,"shutdown thread ending");
-        // если thread не был прерван в PowerOn()
-        if (isShutdown)
-        {
-          // вызываем оригинальный метод powerOff()
-          didShutdown = true;
-          Log.d(TAG,"do shutdown: call powerOff");
-          XposedHelpers.callMethod(microntekServer, "powerOff", new Object[] {});
-          Log.d(TAG,"powerOff called");
-        }
-        else
-        {
-          Log.d(TAG,"shutdown process interrupted");
-        }
-      }
-    };
-    Log.d(TAG,"isRadioRunning="+isRadioRunning);
-    if (isRadioRunning)
-    {
-      // отключаем радио
-      am.setParameters("ctl_radio_mute=true");
+      Log.d(TAG,"ctl_radio_mute=true");
       am.setParameters("av_channel_exit=fm");
+      am.setParameters("ctl_radio_mute=true");
     }
-    // иначе не получим MCU_WAKE_UP
+    // выключаем питание mcu, иначе не получим MCU_WAKE_UP
     am.setParameters("rpt_power=false");
     Log.d(TAG,"starting shutdown delay thread");
     do_shutdown.start();
@@ -159,11 +172,18 @@ public class Main implements IXposedHookLoadPackage {
     {
       Log.d(TAG,"interrupt shutdown");
       do_shutdown.interrupt();
+      Log.d(TAG,"rpt_power=true");
       am.setParameters("rpt_power=true");
       do_shutdown = null;
       // включаем радио, если оно было включено
-      if (isRadioRunning)
+      if (isRadioNeedRun)
       {
+        Log.d(TAG,"ctl_radio_mute=false");
+        // TODO: можно сделать паузу
+        try 
+        {
+		  Thread.sleep(1000);
+		} catch (InterruptedException e) { }
     	// именно в таком порядке
         am.setParameters("av_channel_enter=fm");
         am.setParameters("ctl_radio_mute=false");
@@ -185,16 +205,11 @@ public class Main implements IXposedHookLoadPackage {
       String event = intent.getStringExtra("type");
       Log.d(TAG,"appsReceiver "+event);
       // запущено ли радио
-      if (event.endsWith("-on"))
-      {
-        isRadioRunning = event.equals("radio-on");
-        Log.d(TAG,"isRadioRunning "+isRadioRunning);
-      }
-      else if (event.endsWith("-off"))
-      {
-        isRadioRunning = !event.equals("radio-off");
-        Log.d(TAG,"isRadioRunning "+isRadioRunning);
-      }
+      if (event.equals("radio-on"))
+        isRadioRunning = true;
+      else if (event.equals("radio-off"))
+        isRadioRunning = false;
+      Log.d(TAG,"isRadioRunning "+isRadioRunning);
     }
   };
 

@@ -1,3 +1,6 @@
 <resources>
-    <string name="app_name" translatable="false">XposedMcu</string>
+
+    <string name="app_name">XposedMcu</string>
+    <string name="app_version_name" translatable="false">1.2</string>
+
 </resources>
